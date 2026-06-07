@@ -1,0 +1,96 @@
+:root {
+  --bg-primary: #1a1a2e;
+  --bg-active: #16213e;
+  --bg-struggle: #2b2d42;
+  --bg-gap: #3b3b4f;
+  --coach: #e8d5b7;
+  --flow: #e94560;
+  --gold: #ffd700;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg-primary);
+  color: #e0e0e0;
+  overflow-x: hidden;
+  min-height: 100vh;
+}
+
+a {
+  color: var(--flow);
+  text-decoration: none;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  font-family: inherit;
+}
+
+input {
+  font-family: inherit;
+}
+
+.hex-tile {
+  width: 80px;
+  height: 92px;
+  clip-path: polygon(50% 0%, 95% 25%, 95% 75%, 50% 100%, 5% 75%, 5% 25%);
+  transition: all 0.2s ease;
+  cursor: pointer;
+  position: relative;
+}
+
+.hex-tile:hover {
+  filter: brightness(1.3);
+  transform: scale(1.05);
+}
+
+.hex-tile.active {
+  filter: brightness(1.5) drop-shadow(0 0 8px currentColor);
+  transform: scale(1.1);
+}
+
+.hex-tile.correct {
+  filter: brightness(1.4) drop-shadow(0 0 12px #2ecc71);
+}
+
+.hex-tile.wrong {
+  filter: brightness(1.4) drop-shadow(0 0 12px #e94560);
+  animation: shake 0.3s ease;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.4s ease;
+}
+
+.animate-pulse-glow {
+  animation: pulse 2s ease infinite;
+}
+
+.timer-bar {
+  height: 4px;
+  border-radius: 2px;
+  transition: width 0.05s linear;
+}

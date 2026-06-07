@@ -1,0 +1,9 @@
+flask[async]
+fastapi[standard]
+uvicorn[standard]
+sqlite-utils
+httpx
+pyjwt
+bcrypt
+pydantic[email]
+python-multipart
