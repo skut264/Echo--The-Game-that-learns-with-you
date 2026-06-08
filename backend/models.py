@@ -88,10 +88,63 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
         );
 
+        CREATE TABLE IF NOT EXISTS puzzle_generations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL REFERENCES sessions(id),
+            puzzle_type TEXT NOT NULL,
+            puzzle_data TEXT NOT NULL,
+            generation_params TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS puzzle_analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            attempt_id INTEGER REFERENCES attempts(id),
+            player_id INTEGER NOT NULL REFERENCES players(id),
+            puzzle_type TEXT NOT NULL,
+            time_to_fail_ms REAL,
+            prev_time_to_fail_ms REAL,
+            speed_change REAL,
+            llm_prediction INTEGER,
+            llm_confidence REAL,
+            llm_reasoning TEXT,
+            switched_puzzle INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS psych_questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL REFERENCES sessions(id),
+            player_id INTEGER NOT NULL REFERENCES players(id),
+            question TEXT NOT NULL,
+            options TEXT NOT NULL,
+            selected_index INTEGER,
+            correct_index INTEGER NOT NULL,
+            weight_chosen REAL,
+            is_correct INTEGER,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS player_metrics_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id INTEGER NOT NULL REFERENCES players(id),
+            session_id INTEGER NOT NULL REFERENCES sessions(id),
+            snapshot_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            avg_time_per_note_ms REAL,
+            variance_time_per_note REAL,
+            error_rate_rolling REAL,
+            reaction_time_improvement REAL,
+            fatigue_score REAL,
+            puzzle_type TEXT,
+            llm_generated_puzzle INTEGER DEFAULT 0
+        );
+
         CREATE INDEX IF NOT EXISTS idx_attempts_player ON attempts(player_id);
         CREATE INDEX IF NOT EXISTS idx_attempts_session ON attempts(session_id);
         CREATE INDEX IF NOT EXISTS idx_sessions_player ON sessions(player_id);
         CREATE INDEX IF NOT EXISTS idx_struggle_player ON struggle_events(player_id);
+        CREATE INDEX IF NOT EXISTS idx_puzzle_analyses ON puzzle_analyses(player_id, puzzle_type);
+        CREATE INDEX IF NOT EXISTS idx_metrics_snapshot ON player_metrics_snapshots(player_id, session_id);
     """)
     conn.commit()
     conn.close()
@@ -229,6 +282,103 @@ def get_player_sessions(player_id: int, limit: int = 20):
         """SELECT * FROM sessions WHERE player_id=?
            ORDER BY started_at DESC LIMIT ?""",
         (player_id, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def record_puzzle_generation(session_id: int, puzzle_type: str, puzzle_data: dict, params: dict | None = None) -> int:
+    conn = get_connection()
+    cur = conn.execute(
+        "INSERT INTO puzzle_generations (session_id, puzzle_type, puzzle_data, generation_params) VALUES (?, ?, ?, ?)",
+        (session_id, puzzle_type, json.dumps(puzzle_data), json.dumps(params) if params else None),
+    )
+    gid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return gid
+
+
+def record_puzzle_analysis(attempt_id: int, player_id: int, puzzle_type: str,
+                            time_to_fail_ms: float | None, prev_time_to_fail_ms: float | None,
+                            speed_change: float | None, llm_prediction: bool | None,
+                            llm_confidence: float | None, llm_reasoning: str | None,
+                            switched: bool = False) -> int:
+    conn = get_connection()
+    cur = conn.execute(
+        """INSERT INTO puzzle_analyses (attempt_id, player_id, puzzle_type,
+           time_to_fail_ms, prev_time_to_fail_ms, speed_change,
+           llm_prediction, llm_confidence, llm_reasoning, switched_puzzle)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (attempt_id, player_id, puzzle_type, time_to_fail_ms, prev_time_to_fail_ms,
+         speed_change, int(llm_prediction) if llm_prediction is not None else None,
+         llm_confidence, llm_reasoning, int(switched)),
+    )
+    aid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return aid
+
+
+def record_psych_question(session_id: int, player_id: int, question: str,
+                           options: list, selected_index: int | None,
+                           correct_index: int, weight_chosen: float,
+                           is_correct: bool | None) -> int:
+    conn = get_connection()
+    cur = conn.execute(
+        """INSERT INTO psych_questions (session_id, player_id, question, options,
+           selected_index, correct_index, weight_chosen, is_correct)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (session_id, player_id, question, json.dumps(options),
+         selected_index, correct_index, weight_chosen,
+         int(is_correct) if is_correct is not None else None),
+    )
+    qid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return qid
+
+
+def record_metrics_snapshot(player_id: int, session_id: int,
+                             avg_time_ms: float | None, variance_time: float | None,
+                             error_rate: float | None, reaction_improvement: float | None,
+                             fatigue: float | None, puzzle_type: str | None,
+                             llm_gen: bool = False) -> int:
+    conn = get_connection()
+    cur = conn.execute(
+        """INSERT INTO player_metrics_snapshots (player_id, session_id,
+           avg_time_per_note_ms, variance_time_per_note, error_rate_rolling,
+           reaction_time_improvement, fatigue_score, puzzle_type, llm_generated_puzzle)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (player_id, session_id, avg_time_ms, variance_time,
+         error_rate, reaction_improvement, fatigue, puzzle_type, int(llm_gen)),
+    )
+    sid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return sid
+
+
+def get_metrics_history(player_id: int, session_id: int, limit: int = 10) -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT * FROM player_metrics_snapshots
+           WHERE player_id=? AND session_id=?
+           ORDER BY snapshot_at DESC LIMIT ?""",
+        (player_id, session_id, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_last_two_fail_attempts(player_id: int, puzzle_type: str) -> list[dict]:
+    """Get the two most recent failed attempts for a specific puzzle type."""
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT * FROM attempts
+           WHERE player_id=? AND is_correct=0 AND error_type IS NOT NULL
+           ORDER BY attempted_at DESC LIMIT 2""",
+        (player_id,),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

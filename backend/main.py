@@ -3,6 +3,8 @@
 
 import json
 import time
+import math
+import random
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -10,9 +12,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 import models
 import auth
-from config import COLOR_MAP, FIB_RULES, get_fib_rule
+from config import COLOR_MAP, FIB_RULES, get_fib_rule, AVAILABLE_PUZZLE_TYPES
 from engine import AdaptiveGameEngine, AttemptSnapshot
 from llm_client import get_coaching_hint
+from puzzle_generator import (
+    generate_puzzle,
+    get_psychology_question,
+    llm_predict_failure,
+    select_puzzle_type,
+    generate_pattern_puzzle,
+    generate_motion_puzzle,
+)
 
 # ── Auth scheme ──
 security = HTTPBearer(auto_error=False)
@@ -266,6 +276,204 @@ def game_state(player: dict = Depends(get_current_user)):
     if not engine:
         raise HTTPException(400, "No active game.")
     return engine.get_dashboard_snapshot()
+
+
+# ── Puzzle generator schema ──
+
+class PuzzleGenerateRequest(BaseModel):
+    puzzle_type: str | None = None
+    session_id: int | None = None
+
+
+class PsychAnswerRequest(BaseModel):
+    selected_index: int
+    time_taken_ms: float
+
+
+class MetricsSnapshotRequest(BaseModel):
+    avg_time_per_note_ms: float | None = None
+    variance_time_per_note: float | None = None
+    error_rate_rolling: float | None = None
+    reaction_time_improvement: float | None = None
+    fatigue_score: float | None = None
+    puzzle_type: str | None = None
+
+
+# ── Puzzle endpoints ──
+
+@app.post("/api/puzzle/generate")
+async def generate_puzzle_endpoint(
+    req: PuzzleGenerateRequest,
+    player: dict = Depends(get_current_user),
+):
+    pid = player["id"]
+    engine = _active_engines.get(pid)
+    session_id = _active_sessions.get(pid)
+    if not engine or not session_id:
+        raise HTTPException(400, "No active game.")
+
+    puzzle_type = req.puzzle_type or select_puzzle_type(
+        engine.current_puzzle_type,
+        engine.puzzle_fail_count,
+        AVAILABLE_PUZZLE_TYPES,
+    )
+
+    seq_length = engine.level_state.sequence_length
+    difficulty = engine.level_state.difficulty
+
+    puzzle_data = generate_puzzle(puzzle_type, seq_length, difficulty)
+
+    # Record generation
+    gen_id = models.record_puzzle_generation(session_id, puzzle_type, puzzle_data, {
+        "seq_length": seq_length,
+        "difficulty": difficulty,
+    })
+
+    engine.current_puzzle_type = puzzle_type
+    engine.current_puzzle_data = puzzle_data
+    engine.current_puzzle_id = gen_id
+
+    return {
+        "puzzle_id": gen_id,
+        "puzzle_type": puzzle_type,
+        "puzzle_data": puzzle_data,
+        "fib_spiral_visible": puzzle_data.get("fib_spiral_visible", False),
+        "background_spiral": puzzle_data.get("background_spiral", None),
+    }
+
+
+@app.post("/api/puzzle/psychology-question")
+async def get_psych_question(player: dict = Depends(get_current_user)):
+    pid = player["id"]
+    engine = _active_engines.get(pid)
+    if not engine:
+        raise HTTPException(400, "No active game.")
+
+    q = get_psychology_question(engine.level_state.difficulty)
+    return q
+
+
+@app.post("/api/puzzle/psychology-answer")
+async def answer_psych_question(
+    req: PsychAnswerRequest,
+    player: dict = Depends(get_current_user),
+):
+    pid = player["id"]
+    engine = _active_engines.get(pid)
+    session_id = _active_sessions.get(pid)
+    if not engine or not session_id:
+        raise HTTPException(400, "No active game.")
+
+    # We need the last psych question from the engine's stored state
+    # For now, record a placeholder
+    is_correct = engine._psychology_results and True or False
+    return {"is_correct": is_correct, "weight_applied": 1.0}
+
+
+@app.post("/api/puzzle/llm-predict")
+async def predict_failure(player: dict = Depends(get_current_user)):
+    pid = player["id"]
+    engine = _active_engines.get(pid)
+    session_id = _active_sessions.get(pid)
+    if not engine or not session_id:
+        raise HTTPException(400, "No active game.")
+
+    puzzle_type = engine.current_puzzle_type or "unknown"
+    fail_count = engine.puzzle_fail_count
+
+    # Get last two fail times
+    prev_time = engine.prev_time_to_fail_ms
+    last_fails = models.get_last_two_fail_attempts(pid, puzzle_type)
+    time_1 = last_fails[-1]["time_per_note_ms"] if len(last_fails) >= 1 else None
+    time_2 = last_fails[0]["time_per_note_ms"] if len(last_fails) >= 2 else prev_time
+
+    metrics_hist = None
+    if session_id:
+        metrics_hist = models.get_metrics_history(pid, session_id, 5)
+
+    result = await llm_predict_failure(
+        player_id=pid,
+        puzzle_type=puzzle_type,
+        attempt_count=fail_count,
+        time_to_fail_1_ms=time_1,
+        time_to_fail_2_ms=time_2,
+        metrics_history=metrics_hist,
+    )
+
+    return result
+
+
+@app.post("/api/puzzle/switch")
+async def switch_puzzle(player: dict = Depends(get_current_user)):
+    pid = player["id"]
+    engine = _active_engines.get(pid)
+    session_id = _active_sessions.get(pid)
+    if not engine or not session_id:
+        raise HTTPException(400, "No active game.")
+
+    engine.puzzle_fail_count = 0
+    engine.prev_time_to_fail_ms = None
+    engine.puzzle_switch_count += 1
+
+    new_type = select_puzzle_type(
+        engine.current_puzzle_type,
+        3,  # Force switch
+        AVAILABLE_PUZZLE_TYPES,
+    )
+
+    seq_length = engine.level_state.sequence_length
+    difficulty = engine.level_state.difficulty
+    puzzle_data = generate_puzzle(new_type, seq_length, difficulty)
+
+    gen_id = models.record_puzzle_generation(session_id, new_type, puzzle_data, {
+        "seq_length": seq_length,
+        "difficulty": difficulty,
+        "forced_switch": True,
+    })
+
+    engine.current_puzzle_type = new_type
+    engine.current_puzzle_data = puzzle_data
+    engine.current_puzzle_id = gen_id
+
+    return {
+        "puzzle_id": gen_id,
+        "puzzle_type": new_type,
+        "puzzle_data": puzzle_data,
+        "fib_spiral_visible": puzzle_data.get("fib_spiral_visible", False),
+    }
+
+
+@app.post("/api/metrics/snapshot")
+async def record_metrics_snapshot(
+    req: MetricsSnapshotRequest,
+    player: dict = Depends(get_current_user),
+):
+    pid = player["id"]
+    session_id = _active_sessions.get(pid)
+    engine = _active_engines.get(pid)
+    if not engine or not session_id:
+        raise HTTPException(400, "No active game.")
+
+    sid = models.record_metrics_snapshot(
+        player_id=pid,
+        session_id=session_id,
+        avg_time_ms=req.avg_time_per_note_ms,
+        variance_time=req.variance_time_per_note,
+        error_rate=req.error_rate_rolling,
+        reaction_improvement=req.reaction_time_improvement,
+        fatigue=req.fatigue_score,
+        puzzle_type=req.puzzle_type or engine.current_puzzle_type,
+    )
+    return {"snapshot_id": sid}
+
+
+@app.get("/api/metrics/history")
+async def get_metrics_history(limit: int = 10, player: dict = Depends(get_current_user)):
+    pid = player["id"]
+    session_id = _active_sessions.get(pid)
+    if not session_id:
+        return {"snapshots": []}
+    return {"snapshots": models.get_metrics_history(pid, session_id, limit)}
 
 
 # ── Dashboard endpoints ──

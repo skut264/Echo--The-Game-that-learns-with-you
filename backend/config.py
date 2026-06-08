@@ -31,6 +31,21 @@ INPUT_LATENCY_SPIKE_MS = 500
 MASTERY_WINDOW_SIZE = 7
 MASTERY_SUCCESS_RATE = 0.80
 
+# Fibonacci constant
+PHI = 1.618033988749895
+
+# Puzzle type registry
+AVAILABLE_PUZZLE_TYPES = [
+    "pattern_recall",
+    "psychology_question",
+    "motion_tracking",
+    "spatial_golden",
+]
+
+# Puzzle fail limits
+PUZZLE_FAIL_PREDICTION_TRIGGER = 2      # After 2 fails, ask LLM
+PUZZLE_FORCE_SWITCH_AFTER = 3            # After 3 fails, force switch
+
 # Fibonacci rule table
 # Level -> (sequence_length, new_rule_description)
 FIB_RULES = {

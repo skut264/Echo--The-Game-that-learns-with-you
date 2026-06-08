@@ -85,6 +85,16 @@ class AdaptiveGameEngine:
         self.level_state = LevelState()
         self._attempts: list[AttemptSnapshot] = []
         self._recovery_streak: int = 0
+        # Multi-puzzle state
+        self.current_puzzle_type: str | None = None
+        self.current_puzzle_data: dict | None = None
+        self.current_puzzle_id: int | None = None
+        self.puzzle_fail_count: int = 0
+        self.prev_time_to_fail_ms: float | None = None
+        self.puzzle_switch_count: int = 0
+        self._recent_fail_times: list[float] = []
+        self._psychology_results: list[dict] = []
+        self._metric_snapshots: list[dict] = []
 
     @property
     def state(self) -> PlayerState:
