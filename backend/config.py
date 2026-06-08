@@ -1,93 +1,84 @@
 #!/usr/bin/env python3
-"""Echo - NeuroFlux v1 Backend Configuration"""
+"""Echo - NeuroFlux Configuration
 
-import os
+Central constants for the dynamic puzzle engine.
+"""
+
 from pathlib import Path
+import secrets
 
-BASE_DIR = Path(__file__).resolve().parent
-
-# Database
-DATABASE_URL = f"sqlite:///{BASE_DIR}/echo.db"
+# ── Paths ──
+BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / "echo.db"
 
-# Auth
-SECRET_KEY = os.environ.get("ECHO_SECRET_KEY", "echo-dev-secret-change-in-production")
+# ── JWT Auth ──
+SECRET_KEY = secrets.token_hex(32)
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
+ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
 
-# Game defaults
-DEFAULT_GRID_SIZE = 3
-INITIAL_DIFFICULTY = 1.0
-DIFFICULTY_FLOOR = 0.6
-DIFFICULTY_CEILING = 1.3
+# ── Old engine constants (kept for surface reference) ──
+DIFFICULTY_FLOOR = 0.5
+DIFFICULTY_CEILING = 5.0
 BASELINE_DIFFICULTY = 1.0
-
-# Struggle detection
 STRUGGLE_WINDOW_SECONDS = 60
-ERROR_THRESHOLD = 3
-INPUT_LATENCY_SPIKE_MS = 500
-
-# Mastery threshold (5 out of 7)
+ERROR_THRESHOLD = 2
+INPUT_LATENCY_SPIKE_MS = 2000
 MASTERY_WINDOW_SIZE = 7
-MASTERY_SUCCESS_RATE = 0.80
+MASTERY_SUCCESS_RATE = 0.8
 
-# Fibonacci constant
-PHI = 1.618033988749895
-
-# Puzzle type registry
-AVAILABLE_PUZZLE_TYPES = [
-    "pattern_recall",
+# ── Dynamic puzzle constants ──
+PUZZLE_TYPES = [
+    "pattern_recognition",
     "psychology_question",
-    "motion_tracking",
-    "spatial_golden",
+    "spatial_logic",
+    "sequence_memory",
+    "timing_challenge",
 ]
 
-# Puzzle fail limits
-PUZZLE_FAIL_PREDICTION_TRIGGER = 2      # After 2 fails, ask LLM
-PUZZLE_FORCE_SWITCH_AFTER = 3            # After 3 fails, force switch
+# Max times to retry generation of same puzzle type before switching
+MAX_GENERATION_RETRIES = 3
 
-# Fibonacci rule table
-# Level -> (sequence_length, new_rule_description)
+# Timeouts
+PUZZLE_GENERATION_TIMEOUT = 60  # LLM call timeout
+COACHING_TIMEOUT = 30
+PREDICTION_TIMEOUT = 30
+
+# ── Fibonacci progression (cosmetic only) ──
 FIB_RULES = {
-    0: (3, "Base: Match the pattern"),
-    1: (3, "Base: Match the pattern"),
-    2: (5, "Rule A: Notes have rhythm timing"),
-    3: (5, "Rule B: Some notes are distractors (wrong color)"),
-    5: (8, "Rule C: Moving targets — notes shift position"),
-    8: (8, "Combo: Timing + Distractors + Movement"),
-    13: (13, "Combo+: All rules + speed rapid fire"),
+    1: (3, "Narrow — memorize 3-note patterns"),
+    2: (5, "Standard — 5-note sequences"),
+    3: (8, "Expanded — 8-item challenges"),
+    4: (13, "Advanced — recognize 13 elements"),
+    5: (21, "Master — 21-step complex patterns"),
 }
 
-def get_fib_rule(level: int) -> tuple:
-    """Look up the Fibonacci rule set for a given level.
-    Returns the closest rule set at or below the level.
-    """
-    fib_keys = sorted(FIB_RULES.keys())
-    applicable = 0
-    for k in fib_keys:
-        if k <= level:
-            applicable = k
-    return FIB_RULES[applicable]
 
-# Colors
+def get_fib_rule(level: int) -> tuple[int, str]:
+    """Get the Fibonacci rule for a given level."""
+    key = min(level, max(FIB_RULES.keys()))
+    if key not in FIB_RULES:
+        return (3, "Narrow")
+    return FIB_RULES[key]
+
+
+# ── Color themes ──
 COLOR_MAP = {
     "stable_idle": "#1a1a2e",
-    "stable_active": "#16213e",
-    "struggle": "#2b2d42",
-    "skill_gap": "#3b3b4f",
-    "coaching": "#e8d5b7",
-    "flow_success": "#e94560",
-    "new_rule_reveal": "#ffd700",
+    "stable": "#16213e",
+    "struggle": "#2d1b2a",
+    "skill_gap": "#1b1b2f",
+    "flow": "#1a2e1a",
+    "success_burst": "#2ecc71",
+    "fail": "#e94560",
+    "hint": "#ffd700",
+    "fibonacci": "#00d4ff",
+    "psychology": "#b388ff",
 }
 
-# LLM
-LLM_API_BASE = os.environ.get("OLLAMA_HOST", "http://89.58.33.163:11434")
-LLM_MODEL = "qwen2.5:3b"
-LLM_TIMEOUT_SECONDS = 2.0
-LLM_FALLBACK_HINTS = {
-    "timing": "Focus on the rhythm — each note has a beat.",
-    "position": "Watch the sequence from start to end before tapping.",
-    "distractor": "Ignore wrong colors — match the pattern, not the flash.",
-    "calculation": "Take it one note at a time. Breathe between taps.",
-    "generic": "You've got this. Slow down and watch the full sequence.",
-}
+# ── Canvas ──
+CANVAS_W = 800
+CANVAS_H = 600
+
+PUZZLE_AREA = {"x": 50, "y": 50, "w": 700, "h": 400}
+HINT_AREA = {"x": 50, "y": 480, "w": 700, "h": 80}
+FEEDBACK_AREA = {"x": 50, "y": 420, "w": 700, "h": 50}
