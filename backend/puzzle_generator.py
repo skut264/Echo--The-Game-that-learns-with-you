@@ -1,415 +1,313 @@
 #!/usr/bin/env python3
-"""Echo - Dynamic Puzzle Generator with Fib/Golden Ratio + LLM prediction"""
+"""Echo - LLM Puzzle Generator
 
-import math
+Generates unique dynamic puzzles using the Qwen2.5-Coder-7B model.
+Also provides LLM-based failure prediction.
+
+Puzzle types:
+  - pattern_recognition: Timed sequence/pattern puzzles
+  - psychology_question: Mind-bending questions with weighted options
+  - spatial_logic: Spatial reasoning challenges
+  - sequence_memory: Memorize and recall sequences
+  - timing_challenge: Reaction-time based puzzles
+
+Each puzzle includes golden-ratio canvas layout data.
+"""
+
+from __future__ import annotations
 import json
-import random
 import time
+import random
+import httpx
 from typing import Any
 
-PHI = 1.618033988749895
-GOLDEN_ANGLE = 137.50776405003785  # degrees
+GENERATOR_ENDPOINT = "http://localhost:11435/v1/chat/completions"
+MODEL = "qwen2.5-coder-7b-instruct-q4_k_m.gguf"
 
-# ── Psychology question bank ──
+PUZZLE_INSTRUCTIONS = """
+You are a creative puzzle generator for a cognitive training game called Echo.
+You MUST generate UNIQUE, challenging puzzles each time. NEVER repeat yourself.
 
-PSYCH_QUESTIONS = [
-    {
-        "question": "A bat and a ball cost $1.10. The bat costs $1 more than the ball. How much does the ball cost?",
-        "options": [
-            {"text": "5 cents", "weight": 1, "reason": "Correct — you avoided the intuitive trap."},
-            {"text": "10 cents", "weight": 8, "reason": "Common trap — the fast system took over."},
-            {"text": "15 cents", "weight": 5, "reason": "Close but still caught by anchoring."},
-        ],
-        "correct_index": 0,
-        "explanation": "If ball = x, bat = x+1, total = 2x+1 = 1.10, so x = 0.05."
-    },
-    {
-        "question": "Which shape has the largest area? A circle with radius 1, or a square with side length 1.77 (sqrt of pi)?",
-        "options": [
-            {"text": "The circle is larger", "weight": 3, "reason": "Vertical — you remembered pi."},
-            {"text": "The square is larger", "weight": 7, "reason": "Horizontal — intuition bias."},
-            {"text": "They are equal", "weight": 1, "reason": "Analytical — you did the math."},
-        ],
-        "correct_index": 2,
-        "explanation": "Circle area = pi*1^2 = pi. Square area = 1.77^2 = 3.1329. They are approximately equal."
-    },
-    {
-        "question": "You flip a fair coin 5 times and get heads every time. What is the probability of heads on the 6th flip?",
-        "options": [
-            {"text": "50% — each flip is independent", "weight": 1, "reason": "Gambler's fallacy resisted."},
-            {"text": "Less than 50% — due for tails", "weight": 9, "reason": "Gambler's fallacy — past doesn't affect future."},
-            {"text": "More than 50% — the coin must be biased", "weight": 6, "reason": "Hot hand fallacy — small sample bias."},
-        ],
-        "correct_index": 0,
-        "explanation": "Each coin flip is independent. Probability is always 50%."
-    },
-    {
-        "question": "If it takes 5 machines 5 minutes to make 5 widgets, how long would it take 100 machines to make 100 widgets?",
-        "options": [
-            {"text": "5 minutes", "weight": 1, "reason": "Correct — each machine makes 1 widget per 5 minutes."},
-            {"text": "100 minutes", "weight": 7, "reason": "Linear scaling fallacy — work doesn't compound like that."},
-            {"text": "20 minutes", "weight": 5, "reason": "Close but wrong scaling assumption."},
-        ],
-        "correct_index": 0,
-        "explanation": "Each machine makes 1 widget in 5 minutes. 100 machines make 100 widgets in 5 minutes."
-    },
-    {
-        "question": "What comes next in this sequence: 1, 1, 2, 3, 5, 8, 13, ?",
-        "options": [
-            {"text": "21 — Fibonacci", "weight": 1, "reason": "Correct — you recognized the golden sequence."},
-            {"text": "20 — arithmetic progression", "weight": 8, "reason": "Wrong pattern — each term is sum of two prior."},
-            {"text": "15 — prime sequence", "weight": 6, "reason": "Wrong sequence type entirely."},
-        ],
-        "correct_index": 0,
-        "explanation": "Fibonacci: each number is the sum of the two preceding numbers. 8 + 13 = 21."
-    },
-    {
-        "question": "Linda is 31, single, outspoken, and very bright. She majored in philosophy. As a student, she was deeply concerned with discrimination and social justice. Which is more probable?",
-        "options": [
-            {"text": "Linda is a bank teller", "weight": 3, "reason": "Correct — conjunctions are always less probable."},
-            {"text": "Linda is a bank teller AND active in the feminist movement", "weight": 8, "reason": "Conjunction fallacy — adding detail makes it seem more likely but IS less probable."},
-            {"text": "Linda works in social justice", "weight": 5, "reason": "Representativeness heuristic bias."},
-        ],
-        "correct_index": 0,
-        "explanation": "The conjunction of two events cannot be more probable than either single event. This is the classic Linda problem (Tversky & Kahneman)."
-    },
-    {
-        "question": "A room has 23 people. What is the probability that at least two share a birthday?",
-        "options": [
-            {"text": "About 50%", "weight": 1, "reason": "Correct — birthday paradox in action."},
-            {"text": "About 6%", "weight": 8, "reason": "Extreme underestimation — the math defies intuition."},
-            {"text": "About 23%", "weight": 5, "reason": "Still underestimating — the probability climbs fast."},
-        ],
-        "correct_index": 0,
-        "explanation": "With 23 people, P(at least one shared birthday) ~ 50.7%. With 30, it's ~70%. With 57, it's ~99%."
-    },
-    {
-        "question": "Which weighs more: a pound of feathers or a pound of gold?",
-        "options": [
-            {"text": "They weigh the same — both are a pound", "weight": 1, "reason": "Correct — you ignored the trick framing."},
-            {"text": "Feathers — gold is measured in troy pounds", "weight": 6, "reason": "Correct trivia but the question says 'pound' not 'troy pound'."},
-            {"text": "Gold — it's denser", "weight": 7, "reason": "Confusing density with weight. A pound is a pound."},
-        ],
-        "correct_index": 0,
-        "explanation": "A pound is a pound regardless of material. This tests whether you separate the trick from the fact."
-    },
-    {
-        "question": "You see a number written as MCMLXXXVIII. What year is it?",
-        "options": [
-            {"text": "1988", "weight": 1, "reason": "Correct — you decoded Roman numerals."},
-            {"text": "1888", "weight": 6, "reason": "You skipped the CM (900) part."},
-            {"text": "2188", "weight": 8, "reason": "Added instead of understanding subtractive notation."},
-        ],
-        "correct_index": 0,
-        "explanation": "M=1000, CM=900, LXXX=80, VIII=8. Total: 1988."
-    },
-    {
-        "question": "How many times can you subtract 5 from 25?",
-        "options": [
-            {"text": "Once — after that it's 20, not 25", "weight": 1, "reason": "Correct — lateral thinking. The trick is in the wording."},
-            {"text": "5 times — 25/5 = 5", "weight": 8, "reason": "Mathematical but literal — you can only subtract from the original once."},
-            {"text": "Infinite — math is continuous", "weight": 7, "reason": "Overthinking the question completely."},
-        ],
-        "correct_index": 0,
-        "explanation": "Once you subtract 5 from 25, you have 20. You're no longer subtracting from 25."
-    },
-]
+{type_specific_instruction}
+
+CRITICAL RULES:
+1. Every puzzle MUST be unique - different scenario, numbers, layout, or twist each time
+2. Do NOT repeat the same puzzle template twice
+3. Be creative - use psychology, math tricks, visual patterns, timing traps
+4. The 3 options MUST have REALISTIC weights that make the question meaningful
+5. The correct_answer MUST be one of the option text values exactly
+
+Return ONLY valid JSON with these fields:
+  - prompt: str (the puzzle question/challenge text, 1-2 sentences)
+  - options: list of {{"text": str, "weight": int}}  (weight 0-100, higher = more correct)
+  - correct_answer: str (must match an option text exactly)
+  - time_limit_ms: int (7000-30000 depending on difficulty)
+  - metadata: {{"difficulty": int (1-10), "category": str, "hint": str (subtle hint not giving answer)}}
+"""
+
+PATTERN_INSTRUCTION = """
+Generate a pattern recognition puzzle. Examples of patterns:
+- Number sequences with hidden operations
+- Visual pattern descriptions requiring matching
+- Symbolic logic puzzles
+- Mathematical riddles with a clever twist
+- Time-based pattern continuation
+
+The options should be 3 choices where one is correct and the others are plausible traps.
+"""
+
+PSYCH_INSTRUCTION = """
+Generate a psychology/mind-bending question. Examples:
+- Cognitive bias traps (confirmation bias, anchoring effect, etc.)
+- Probability paradoxes (Monty Hall, base rate fallacy)
+- Framing effect questions (same problem, different frames)
+- Moral reasoning with weighted choices
+- Memory/recollection triggers
+- Attention/awareness tests
+
+Each option must have a weight (0-100) representing how "correct" or "optimal" that choice is psychologically.
+The weights should NOT be binary (100/0/0) — make them realistic: e.g. one option at 70-95, others at 20-50.
+The correct_answer should be the MOST correct psychologically, but wrong answers have partial truth too.
+
+These are NOT trivia questions. They should make the player think about how they think.
+"""
+
+SPATIAL_INSTRUCTION = """
+Generate a spatial logic puzzle. Examples:
+- Mental rotation descriptions
+- Path-finding with constraints
+- Arrangement puzzles
+- Symmetry/mirror reasoning
+- Grid-based logic
+
+The options should be 3 choices with varying degrees of correctness.
+"""
+
+SEQUENCE_INSTRUCTION = """
+Generate a sequence memory challenge. Examples:
+- Number/figure sequences with hidden rules
+- Cause-effect chains
+- Step-by-step procedural reasoning
+- Transformation chains
+- Pattern of transformations
+
+The options should be 3 choices where one completes/follows the pattern correctly.
+"""
+
+TIMING_INSTRUCTION = """
+Generate a timing/reaction challenge description. Examples:
+- Describe a scenario where timing matters
+- Multi-step procedure ordering
+- Speed vs accuracy tradeoffs
+- Reaction-based reasoning
+- Time estimation challenges
+
+The options should be 3 choices with one being optimal timing-wise.
+"""
+
+TYPE_INSTRUCTIONS = {
+    "pattern_recognition": PATTERN_INSTRUCTION,
+    "psychology_question": PSYCH_INSTRUCTION,
+    "spatial_logic": SPATIAL_INSTRUCTION,
+    "sequence_memory": SEQUENCE_INSTRUCTION,
+    "timing_challenge": TIMING_INSTRUCTION,
+}
 
 
-def _golden_spiral_point(index: int, canvas_w: float, canvas_h: float, max_notes: int) -> dict:
-    """Position a point on the golden spiral."""
-    angle = math.radians(index * GOLDEN_ANGLE)
-    # Center at the golden ratio division of the canvas
-    cx = canvas_w * 0.382
-    cy = canvas_h * 0.382
-    # Radius grows with phi^index but capped to fit canvas
-    max_r = min(canvas_w, canvas_h) * 0.35
-    radius = max_r * (1 - math.pow(PHI, -index - 1))
-    # Add some organic jitter
-    jitter = 0.92 + random.random() * 0.16
-    x = cx + radius * math.cos(angle) * jitter
-    y = cy + radius * math.sin(angle) * jitter
-    # Element size shrinks with phi
-    base_size = 48
-    size = max(20, base_size / math.pow(PHI, index / 2 + 1))
-    rotation = angle * (180 / math.pi) % 360
-    return {"x": round(x, 1), "y": round(y, 1), "size": round(size, 1), "rotation": round(rotation, 1)}
-
-
-def generate_pattern_puzzle(seq_length: int, difficulty: float) -> dict:
-    """Generate a pattern recall puzzle with fibonacci positioning."""
-    canvas_w = 800
-    canvas_h = 600
-    notes = []
-    note_colors = ["#e94560", "#0f3460", "#533483", "#ffd700", "#2ecc71", "#3498db", "#e8d5b7", "#ff6b6b"]
-
-    for i in range(seq_length):
-        pos = _golden_spiral_point(i, canvas_w, canvas_h, seq_length)
-        notes.append({
-            "index": i,
-            "x": pos["x"],
-            "y": pos["y"],
-            "size": pos["size"],
-            "rotation": pos["rotation"],
-            "color": note_colors[i % len(note_colors)],
-            "shape": random.choice(["circle", "hexagon", "diamond", "star"]),
-        })
-
-    # Fibonacci timing: delay between notes = base / (difficulty * phi^i)
-    base_display_ms = 600
-    display_timings = [max(150, int(base_display_ms / (difficulty * math.pow(PHI, -i)))) for i in range(seq_length)]
-
-    return {
-        "puzzle_type": "pattern_recall",
-        "notes": notes,
-        "canvas_width": canvas_w,
-        "canvas_height": canvas_h,
-        "display_timings": display_timings,
-        "fib_spiral_visible": True,
-        "background_spiral": {
-            "arms": 3,
-            "growth": PHI,
-            "opacity": 0.08,
-        },
-    }
-
-
-def generate_motion_puzzle(seq_length: int, difficulty: float) -> dict:
-    """Generate a puzzle with objects moving in fibonacci spiral paths."""
-    canvas_w = 800
-    canvas_h = 600
-    cx = canvas_w * 0.382
-    cy = canvas_h * 0.382
-    objects = []
-
-    for i in range(seq_length):
-        start_angle = math.radians(i * GOLDEN_ANGLE)
-        end_angle = start_angle + math.radians(180)
-        max_r = min(canvas_w, canvas_h) * 0.35
-
-        objects.append({
-            "index": i,
-            "start_x": round(cx + max_r * 0.2 * math.cos(start_angle), 1),
-            "start_y": round(cy + max_r * 0.2 * math.sin(start_angle), 1),
-            "end_x": round(cx + max_r * math.cos(end_angle), 1),
-            "end_y": round(cy + max_r * math.sin(end_angle), 1),
-            "travel_time_ms": int(max(500, 2000 / difficulty * math.pow(PHI, -i))),
-            "color": ["#e94560", "#ffd700", "#2ecc71", "#3498db", "#e8d5b7"][i % 5],
-            "size": int(max(12, 32 / math.pow(PHI, i / 2))),
-        })
-
-    return {
-        "puzzle_type": "motion_tracking",
-        "objects": objects,
-        "canvas_width": canvas_w,
-        "canvas_height": canvas_h,
-        "fib_spiral_visible": True,
-        "background_spiral": {
-            "arms": 5,
-            "growth": PHI,
-            "opacity": 0.06,
-        },
-    }
-
-
-def generate_spatial_puzzle(difficulty: float) -> dict:
-    """Generate a spatial reasoning puzzle using golden rectangle proportions."""
-    canvas_w = 800
-    canvas_h = 600
-    # Golden rectangle divisions
-    rect_w = 300
-    rect_h = rect_w / PHI
-
-    shapes = []
-    # Generate one correct shape and several altered ones
-    num_shapes = 5 + int(difficulty * 2)
-
-    correct_idx = random.randint(0, num_shapes - 1)
-    grid_cols = min(5, num_shapes)
-    spacing_x = (canvas_w - 100) / grid_cols
-    spacing_y = (canvas_h - 200) / max(1, (num_shapes // grid_cols) + 1)
-
-    for i in range(num_shapes):
-        col = i % grid_cols
-        row = i // grid_cols
-        base_x = 50 + col * spacing_x + spacing_x / 2
-        base_y = 200 + row * spacing_y + spacing_y / 2
-
-        # The correct shape has exact golden ratio proportions
-        if i == correct_idx:
-            w = rect_w * 0.15
-            h = w / PHI
-            shapes.append({
-                "x": round(base_x, 1),
-                "y": round(base_y, 1),
-                "width": round(w, 1),
-                "height": round(h, 1),
-                "rotation": 0,
-                "color": "#2ecc71",
-                "is_correct": True,
-                "shape": "golden_rect",
-            })
-        else:
-            # Distorted - slightly wrong ratio
-            distortion = 0.75 + random.random() * 0.5
-            w = rect_w * 0.15
-            h = (w / PHI) * distortion
-            shapes.append({
-                "x": round(base_x, 1),
-                "y": round(base_y, 1),
-                "width": round(w, 1),
-                "height": round(h, 1),
-                "rotation": random.uniform(-5, 5),
-                "color": "#533483",
-                "is_correct": False,
-                "shape": "distorted_rect",
-            })
-
-    random.shuffle(shapes)
-
-    return {
-        "puzzle_type": "spatial_golden",
-        "shapes": shapes,
-        "canvas_width": canvas_w,
-        "canvas_height": canvas_h,
-        "correct_index": correct_idx,
-        "fib_spiral_visible": True,
-    }
-
-
-def get_psychology_question(difficulty: float) -> dict:
-    """Return a random psychology question."""
-    q = random.choice(PSYCH_QUESTIONS)
-    options = q["options"]
-    # Shuffle options but track correct
-    indexed = list(enumerate(options))
-    random.shuffle(indexed)
-    shuffled: list[dict] = []
-    new_correct = 0
-    for new_idx, (orig_idx, opt) in enumerate(indexed):
-        shuffled.append({"text": opt["text"], "weight": opt["weight"], "reason": opt["reason"]})
-        if orig_idx == q["correct_index"]:
-            new_correct = new_idx
-    return {
-        "puzzle_type": "psychology_question",
-        "question": q["question"],
-        "options": shuffled,
-        "correct_index": new_correct,
-        "explanation": q["explanation"],
-        "max_time_ms": int(max(8000, 15000 / difficulty)),
-    }
-
-
-async def llm_predict_failure(
-    player_id: int,
-    puzzle_type: str,
-    attempt_count: int,
-    time_to_fail_1_ms: float | None,
-    time_to_fail_2_ms: float | None,
-    metrics_history: list[dict] | None = None,
-) -> dict:
-    """Call the Qwen coaching model (qwen2.5:3b) to predict if player will fail again."""
-    import httpx
-
-    speed_change = None
-    if time_to_fail_1_ms is not None and time_to_fail_2_ms is not None:
-        if time_to_fail_1_ms > 0:
-            speed_change = (time_to_fail_2_ms - time_to_fail_1_ms) / time_to_fail_1_ms
-        else:
-            speed_change = 0.0
-
-    metrics_str = ""
-    if metrics_history and len(metrics_history) > 0:
-        last5 = metrics_history[-5:]
-        metrics_str = "Recent metrics: " + json.dumps(last5)
-
-    prompt = f"""You are an adaptive puzzle game AI. Analyze this player's performance pattern and predict if they will fail again.
-
-Puzzle type: {puzzle_type}
-Attempt count: {attempt_count}
-Time to fail attempt 1: {time_to_fail_1_ms}ms
-Time to fail attempt 2: {time_to_fail_2_ms}ms
-Speed change: {speed_change} (positive = got slower, negative = got faster)
-
-{metrics_str}
-
-Respond with a JSON object ONLY:
-{{"will_fail": bool, "confidence": float (0-1), "reasoning": "brief 1 sentence"}}"""
-
+def _call_llm(prompt: str, max_tokens: int = 800, temperature: float = 0.9, timeout: int = 60) -> str | None:
+    """Call the Qwen2.5-Coder model through the tunnel."""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(
-                "http://89.58.33.163:11434/api/generate",
+        with httpx.Client(timeout=httpx.Timeout(timeout)) as client:
+            resp = client.post(
+                GENERATOR_ENDPOINT,
                 json={
-                    "model": "qwen2.5:3b",
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "num_predict": 80,
-                        "temperature": 0.1,
-                    },
+                    "model": MODEL,
+                    "messages": [
+                        {"role": "system", "content": "You are a puzzle generator. Return ONLY valid JSON. No explanations, no markdown formatting, no code fences. Just the raw JSON."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "top_p": 0.95,
                 },
             )
             if resp.status_code == 200:
-                text = resp.json().get("response", "")
-                # Extract JSON
-                import re
-                json_match = re.search(r"\{.*\}", text, re.DOTALL)
-                if json_match:
-                    result = json.loads(json_match.group())
-                    return {
-                        "will_fail": result.get("will_fail", True),
-                        "confidence": result.get("confidence", 0.5),
-                        "reasoning": result.get("reasoning", "LLM analysis"),
-                    }
+                return resp.json()["choices"][0]["message"]["content"]
+            else:
+                print(f"[LLM] Error {resp.status_code}: {resp.text[:200]}")
+                return None
     except Exception as e:
-        pass
-
-    # Fallback heuristic
-    if speed_change is not None and speed_change < -0.3:
-        # Got much faster — panic mode, likely to fail
-        return {"will_fail": True, "confidence": 0.65, "reasoning": "Player is rushing (faster by >30%)."}
-    if speed_change is not None and speed_change > 0.3:
-        # Got slower — disengaging
-        return {"will_fail": True, "confidence": 0.55, "reasoning": "Player is slowing down (>30% slower)."}
-    if attempt_count >= 2:
-        return {"will_fail": True, "confidence": 0.5, "reasoning": "Two consecutive failures. Default prediction."}
-    return {"will_fail": False, "confidence": 0.3, "reasoning": "Insufficient data."}
+        print(f"[LLM] Request failed: {e}")
+        return None
 
 
-def select_puzzle_type(
-    previous_type: str | None,
-    fail_count: int,
-    available_types: list[str],
-) -> str:
-    """Select next puzzle type. Avoid repeats, prefer fresh types."""
-    if fail_count >= 3 and previous_type:
-        # Force switch
-        others = [t for t in available_types if t != previous_type]
-        if others:
-            return random.choice(others)
-    if previous_type and random.random() < 0.4:
-        others = [t for t in available_types if t != previous_type]
-        if others:
-            return random.choice(others)
-    return random.choice(available_types)
+def _parse_json(text: str) -> dict | None:
+    """Extract JSON from LLM response, handling markdown fences."""
+    if not text:
+        return None
+    # Remove markdown code fences if present
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        text = text.rsplit("```", 1)[0] if "```" in text else text
+        text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        print(f"[LLM] Failed to parse JSON: {text[:300]}")
+        return None
 
 
-def generate_puzzle(puzzle_type: str, seq_length: int, difficulty: float) -> dict:
-    """Dispatch to the appropriate puzzle generator."""
-    generators = {
-        "pattern_recall": generate_pattern_puzzle,
-        "motion_tracking": generate_motion_puzzle,
-        "spatial_golden": generate_spatial_puzzle,
+def generate_puzzle(puzzle_type: str, player_context: dict | None = None) -> dict:
+    """
+    Generate a unique puzzle of the given type.
+    
+    Args:
+        puzzle_type: One of the PUZZLE_TYPES
+        player_context: Optional dict with player stats for personalized puzzles
+        
+    Returns:
+        dict with puzzle data ready for DynamicPuzzle.from_llm()
+    """
+    type_instruction = TYPE_INSTRUCTIONS.get(puzzle_type, PATTERN_INSTRUCTION)
+    
+    context_str = ""
+    if player_context:
+        context_str = (
+            f"Player context: {json.dumps(player_context)}\n"
+            "Use this to tailor difficulty. "
+            f"Time limit range: {7000 + player_context.get('total_attempts', 0) * 0} to {30000 - player_context.get('correct_attempts', 0) * 0}\n"
+        )
+    
+    # Add randomness seed to ensure variety
+    seed = int(time.time() * 1000) % 100000
+    rand_prompt = f"Use seed {seed}. Generate a completely fresh puzzle no one has seen before."
+    
+    if puzzle_type == "psychology_question":
+        prompt = (
+            f"{PUZZLE_INSTRUCTIONS.format(type_specific_instruction=PSYCH_INSTRUCTION)}\n\n"
+            f"{rand_prompt}\n"
+            f"{context_str}\n"
+            "IMPORTANT: The 3 options must have REALISTIC weights (not just 100/0/0). "
+            "Each weight 0-100 represents how psychologically 'correct' that option is. "
+            "Make the weights nuanced — e.g. best=85, second=45, third=20. "
+            "The question should make the player reflect on their own psychology."
+        )
+    else:
+        prompt = (
+            f"{PUZZLE_INSTRUCTIONS.format(type_specific_instruction=type_instruction)}\n\n"
+            f"{rand_prompt}\n"
+            f"{context_str}\n"
+        )
+    
+    text = _call_llm(prompt, temperature=0.95)
+    data = _parse_json(text)
+    
+    if not data:
+        # Fallback: generate a simple math puzzle
+        a = random.randint(10, 99)
+        b = random.randint(10, 99)
+        ops = ["+", "-", "*"]
+        op = random.choice(ops)
+        if op == "+":
+            ans = a + b
+        elif op == "-":
+            ans = a - b
+        else:
+            ans = a * b
+        wrong1 = ans + random.randint(1, 10)
+        wrong2 = ans - random.randint(1, 5)
+        data = {
+            "prompt": f"Quick math: What is {a} {op} {b}?",
+            "options": [
+                {"text": str(ans), "weight": 100},
+                {"text": str(wrong1), "weight": 20},
+                {"text": str(wrong2), "weight": 10},
+            ],
+            "correct_answer": str(ans),
+            "time_limit_ms": 10000,
+            "metadata": {"difficulty": 3, "category": "math", "hint": f"Think about {op} operation"},
+        }
+    
+    return data
+
+
+def predict_will_fail(player_context: dict) -> dict:
+    """
+    Use the LLM to predict if the player will fail the current puzzle again.
+    
+    Args:
+        player_context: dict with failure pattern data (from get_prediction_context())
+        
+    Returns:
+        dict with {"prediction": bool, "confidence": float, "reasoning": str}
+    """
+    prompt = (
+        f"Analyze this player's failure pattern and predict if they will fail again "
+        f"if shown the same puzzle type one more time.\n\n"
+        f"Player data: {json.dumps(player_context)}\n\n"
+        f"Consider:\n"
+        f"1. If time_to_fail is DECREASING (speeding up to fail), they're guessing randomly -> WILL FAIL AGAIN\n"
+        f"2. If time_to_fail is INCREASING (taking longer), they might learn -> MIGHT IMPROVE\n"
+        f"3. Low accuracy + fast decisions = random guessing\n"
+        f"4. High hesitation + previous struggle = potential for improvement\n\n"
+        f"Return ONLY valid JSON: {{\"prediction\": bool, \"confidence\": 0.0-1.0, \"reasoning\": \"one sentence\"}}"
+    )
+    
+    text = _call_llm(prompt, max_tokens=200, temperature=0.3)
+    data = _parse_json(text)
+    
+    if data and "prediction" in data:
+        return {
+            "prediction": bool(data["prediction"]),
+            "confidence": float(data.get("confidence", 0.7)),
+            "reasoning": str(data.get("reasoning", "")),
+        }
+    
+    # Fallback: heuristic
+    trend = player_context.get("trend", "insufficient_data")
+    failures = player_context.get("failures_so_far", 0)
+    speed_delta = player_context.get("speed_delta_ms", 0)
+    
+    if trend == "faster_at_failing":
+        return {"prediction": True, "confidence": 0.8, "reasoning": "Getting faster at failing - likely guessing randomly"}
+    elif failures >= 2 and speed_delta < -500:
+        return {"prediction": True, "confidence": 0.75, "reasoning": "Significant speed increase in failing pattern"}
+    elif failures >= 1 and player_context.get("recent_accuracy_window", 1) < 0.3:
+        return {"prediction": True, "confidence": 0.6, "reasoning": "Low overall accuracy combined with this puzzle"}
+    else:
+        return {"prediction": False, "confidence": 0.5, "reasoning": "Insufficient data for reliable prediction"}
+
+
+def generate_coaching_hint(puzzle: dict, player_state: str, attempts_data: list[dict]) -> str:
+    """Generate an LLM-powered coaching hint based on the player's state."""
+    context = {
+        "puzzle_prompt": puzzle.get("prompt", ""),
+        "player_state": player_state,
+        "recent_attempts": attempts_data[-3:] if attempts_data else [],
     }
-    gen = generators.get(puzzle_type)
-    if gen:
-        if puzzle_type == "spatial_golden":
-            return gen(difficulty)
-        return gen(seq_length, difficulty)
-    return generate_pattern_puzzle(seq_length, difficulty)
-
-
-def compute_fibonacci_timing(base_ms: int, difficulty: float, index: int = 0) -> int:
-    """Compute timing with fibonacci/golden ratio influence."""
-    return max(80, int(base_ms / (difficulty * math.pow(PHI, -index + 1))))
+    
+    prompt = (
+        f"Generate a ONE-SENTENCE coaching hint for this player.\n"
+        f"Context: {json.dumps(context)}\n\n"
+        f"Player state is '{player_state}':\n"
+        f"  - 'struggle' = they're trying hard but failing. Give a subtle hint.\n"
+        f"  - 'skill_gap' = they're hesitating. Give encouragement + strategy tip.\n"
+        f"  - 'stable' = they're doing fine. Give a quick tip for mastery.\n\n"
+        f"DO NOT give away the answer. Be subtle and psychological.\n"
+        f"Return ONLY the hint text, no JSON, no quotes."
+    )
+    
+    text = _call_llm(prompt, max_tokens=100, temperature=0.7)
+    if text:
+        # Clean any wrapping
+        text = text.strip().strip('"').strip("'")
+        return text
+    
+    # Fallback hints
+    fallbacks = {
+        "struggle": "Look for the hidden pattern — sometimes the simplest answer is right in front of you.",
+        "skill_gap": "Take a breath. You've got this. Try breaking the problem into smaller parts.",
+        "stable": "Good pace! Now try to see if there's a deeper pattern at work.",
+    }
+    return fallbacks.get(player_state, "Focus on what the question is really asking.")
