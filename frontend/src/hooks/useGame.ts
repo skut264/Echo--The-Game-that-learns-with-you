@@ -1,220 +1,196 @@
-import { useState, useCallback } from 'react';
-import { gameApi } from '../api/client';
-import type { AttemptResponse } from '../types';
+import { useState, useCallback, useRef } from 'react';
+import { gameApi, puzzleApi, metricsApi } from '../api/client';
+import type { PuzzleData } from '../types';
 
-type GamePhase = 'idle' | 'started' | 'displaying' | 'input' | 'coaching' | 'finished';
+export type GamePhase =
+  | 'loading'
+  | 'generating'
+  | 'displaying'
+  | 'input'
+  | 'coaching'
+  | 'psych_question'
+  | 'finished';
 
-interface SequenceNote {
-  row: number;
-  col: number;
-  color: string;
-  index: number;
+export interface GameState {
+  phase: GamePhase;
+  puzzleType: string | null;
+  puzzleData: PuzzleData | null;
+  sessionId: number | null;
+  level: number;
+  difficulty: number;
+  failCount: number;
+  totalFails: number;
+  coachingText: string | null;
+  bgColor: string;
+  playerState: string;
+  attemptCount: number;
+  psychCorrect: number;
+  psychTotal: number;
+  lastAttemptStart: number;
 }
 
-const NOTE_COLORS = ['#e94560', '#0f3460', '#533483', '#ffd700', '#2ecc71', '#3498db'];
-
 export function useGame() {
-  const [phase, setPhase] = useState<GamePhase>('idle');
-  const [sequence, setSequence] = useState<SequenceNote[]>([]);
-  const [playerInput, setPlayerInput] = useState<number>(0);
-  const [displayIndex, setDisplayIndex] = useState(-1);
-  const [sessionId, setSessionId] = useState<number | null>(null);
-  const [level, setLevel] = useState(1);
-  const [difficulty, setDifficulty] = useState(1.0);
-  const [consecutiveWins, setConsecutiveWins] = useState(0);
-  const [state, setState] = useState('stable');
-  const [colorTheme, setColorTheme] = useState('#1a1a2e');
-  const [coachingText, setCoachingText] = useState<string | null>(null);
-  const [newRule, setNewRule] = useState<string | null>(null);
-  const [lastAttemptResponse, setLastAttemptResponse] = useState<AttemptResponse | null>(null);
-  const [lastCorrect, setLastCorrect] = useState<boolean | null>(null);
-  const [showWinStreak, setShowWinStreak] = useState(false);
+  const [state, setState] = useState<GameState>({
+    phase: 'loading',
+    puzzleType: null,
+    puzzleData: null,
+    sessionId: null,
+    level: 1,
+    difficulty: 1.0,
+    failCount: 0,
+    totalFails: 0,
+    coachingText: null,
+    bgColor: '#1a1a2e',
+    playerState: 'stable',
+    attemptCount: 0,
+    psychCorrect: 0,
+    psychTotal: 0,
+    lastAttemptStart: 0,
+  });
 
-  const generateSequence = useCallback((length: number) => {
-    const notes: SequenceNote[] = [];
-    for (let i = 0; i < length; i++) {
-      notes.push({
-        row: Math.floor(Math.random() * 3),
-        col: Math.floor(Math.random() * 3),
-        color: NOTE_COLORS[Math.floor(Math.random() * NOTE_COLORS.length)],
-        index: i,
-      });
-    }
-    return notes;
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  const update = useCallback((patch: Partial<GameState>) => {
+    setState((s) => ({ ...s, ...patch }));
   }, []);
 
+  const recordMetricSnapshot = useCallback(async () => {
+    const s = stateRef.current;
+    try {
+      await metricsApi.snapshot({
+        avg_time_per_note_ms: 0,
+        puzzle_type: s.puzzleType || undefined,
+      });
+    } catch (_) {}
+  }, []);
+
+  const generateNextPuzzle = useCallback(async () => {
+    update({ phase: 'generating', coachingText: null });
+    try {
+      const s = stateRef.current;
+      const res = await puzzleApi.generate(s.puzzleType || undefined);
+      update({
+        puzzleType: res.puzzle_type,
+        puzzleData: res.puzzle_data,
+        phase: res.puzzle_type === 'psychology_question' ? 'psych_question' : 'displaying',
+        lastAttemptStart: Date.now(),
+      });
+    } catch (e) {
+      console.error('Generate puzzle failed:', e);
+    }
+  }, [update]);
+
   const startGame = useCallback(async () => {
+    update({ phase: 'loading' });
     try {
       const res = await gameApi.start();
-      setSessionId(res.session_id);
-      setLevel(res.level);
-      setDifficulty(res.difficulty);
-      setColorTheme(res.color_theme);
-      setState('stable');
-      setConsecutiveWins(0);
-      setCoachingText(null);
-      setNewRule(null);
-      setLastCorrect(null);
-      setShowWinStreak(false);
-
-      const seq = generateSequence(res.sequence_length);
-      setSequence(seq);
-      setPlayerInput(0);
-      setPhase('displaying');
-      return res;
+      update({
+        sessionId: res.session_id,
+        level: res.level || 1,
+        difficulty: res.difficulty || 1.0,
+        bgColor: res.color_theme || '#1a1a2e',
+        phase: 'generating',
+        failCount: 0,
+        totalFails: 0,
+        attemptCount: 0,
+      });
+      await generateNextPuzzle();
     } catch (e) {
-      console.error('Failed to start game:', e);
-      throw e;
+      console.error('Start game failed:', e);
     }
-  }, [generateSequence]);
+  }, [update, generateNextPuzzle]);
 
-  const displaySequence = useCallback(async () => {
-    // Animate through each note
-    const seq = sequence;
-    for (let i = 0; i < seq.length; i++) {
-      setDisplayIndex(i);
-      await new Promise((r) => setTimeout(r, 600 / difficulty));
-    }
-    setDisplayIndex(-1);
-    await new Promise((r) => setTimeout(r, 300));
-    setPhase('input');
-  }, [sequence, difficulty]);
-
-  const playNote = async (row: number, col: number) => {
-    if (phase !== 'input') return;
-
-    const currentNote = sequence[playerInput];
-    const isCorrect = currentNote.row === row && currentNote.col === col;
-    const timePerNote = 0; // Could track this properly
-
-    if (!isCorrect) {
-      setLastCorrect(false);
-
-      // Determine error type
-      let errorType = 'position';
-      if (playerInput > 0 && playerInput < sequence.length - 1) {
-        errorType = 'timing';
-      }
-
+  const handleAttempt = useCallback(
+    async (isCorrect: boolean, _errorType?: string) => {
+      const s = stateRef.current;
+      const decisionTime = Date.now() - (s.lastAttemptStart || Date.now());
       try {
         const res = await gameApi.attempt({
-          sequence_length: sequence.length,
-          is_correct: false,
-          time_per_note_ms: timePerNote,
-          error_type: errorType,
+          puzzle_id: s.puzzleData?.puzzle_id || '',
+          puzzle_type: s.puzzleType || '',
+          prompt: s.puzzleData?.prompt,
+          is_correct: isCorrect,
+          decision_time_ms: decisionTime,
+        });
+        update({
+          playerState: res.state || 'stable',
+          bgColor: res.color_theme || '#1a1a2e',
+          coachingText: res.coaching?.hint || null,
+          attemptCount: s.attemptCount + 1,
         });
 
-        setLevel(res.level);
-        setDifficulty(res.difficulty);
-        setConsecutiveWins(0);
-        setColorTheme(res.color_theme);
-        setState(res.state);
-        setLastAttemptResponse(res);
-        setCoachingText(res.coaching.text || null);
-
-        if (res.new_rule) {
-          setNewRule(res.new_rule);
+        if (!isCorrect) {
+          const newFailCount = s.failCount + 1;
+          update({ failCount: newFailCount });
+          if (newFailCount >= 3) {
+            try {
+              await puzzleApi.switchPuzzle();
+              update({ failCount: 0 });
+            } catch (_) {}
+          }
+        } else {
+          update({ failCount: 0 });
         }
 
-        // Show the correct note briefly
-        setDisplayIndex(playerInput);
-        await new Promise((r) => setTimeout(r, 800));
-        setDisplayIndex(-1);
-        setCoachingText(null);
-        setLastCorrect(null);
-
-        // Restart display with possible new sequence length
-        if (res.sequence_length !== sequence.length) {
-          const newSeq = generateSequence(res.sequence_length);
-          setSequence(newSeq);
+        if ((s.attemptCount + 1) % 5 === 0) {
+          recordMetricSnapshot();
         }
-        setPlayerInput(0);
-        setPhase('displaying');
+
+        setTimeout(() => generateNextPuzzle(), isCorrect ? 600 : 2000);
       } catch (e) {
-        console.error('Failed to send attempt:', e);
+        console.error('Attempt failed:', e);
       }
-      return;
-    }
+    },
+    [update, generateNextPuzzle, recordMetricSnapshot],
+  );
 
-    // Correct so far
-    if (playerInput === sequence.length - 1) {
-      // Completed the sequence!
-      setLastCorrect(true);
+  const handleCorrect = useCallback(
+    async (_timeMs: number) => handleAttempt(true),
+    [handleAttempt],
+  );
 
+  const handleWrong = useCallback(
+    async (errorType: string, _timeMs: number) => handleAttempt(false, errorType),
+    [handleAttempt],
+  );
+
+  const handlePsychAnswer = useCallback(
+    async (selectedIndex: number, timeMs: number) => {
+      const s = stateRef.current;
       try {
-        const res = await gameApi.attempt({
-          sequence_length: sequence.length,
-          is_correct: true,
-          time_per_note_ms: timePerNote,
+        const res = await puzzleApi.psychologyAnswer(selectedIndex, timeMs);
+        update({
+          psychTotal: s.psychTotal + 1,
+          psychCorrect: s.psychCorrect + (res.is_correct ? 1 : 0),
+          coachingText: res.is_correct
+            ? 'Correct! Your analytical mind prevailed.'
+            : 'Interesting choice. The weight of your answer affects your difficulty.',
         });
-
-        setLevel(res.level);
-        setDifficulty(res.difficulty);
-        setConsecutiveWins(res.consecutive_wins);
-        setColorTheme(res.color_theme);
-        setState(res.state);
-        setLastAttemptResponse(res);
-
-        if (res.coaching.text) {
-          setCoachingText(res.coaching.text);
-        }
-        if (res.new_rule) {
-          setNewRule(res.new_rule);
-        }
-
-        if (res.consecutive_wins >= 3) {
-          setShowWinStreak(true);
-          setTimeout(() => setShowWinStreak(false), 1500);
-        }
-
-        // Generate next sequence
-        await new Promise((r) => setTimeout(r, 500));
-        setLastCorrect(null);
-        setCoachingText(null);
-        setNewRule(null);
-
-        const newSeq = generateSequence(res.sequence_length);
-        setSequence(newSeq);
-        setPlayerInput(0);
-        setPhase('displaying');
+        setTimeout(() => generateNextPuzzle(), 2000);
       } catch (e) {
-        console.error('Failed to send attempt:', e);
+        console.error('Psych answer failed:', e);
       }
-    } else {
-      setPlayerInput((p) => p + 1);
-    }
-  };
+    },
+    [update, generateNextPuzzle],
+  );
 
-  const endGame = async () => {
+  const endGame = useCallback(async () => {
     try {
-      const res = await gameApi.end();
-      setPhase('finished');
-      return res;
+      await gameApi.end();
+      update({ phase: 'finished' });
     } catch (e) {
-      console.error('Failed to end game:', e);
+      console.error('End game failed:', e);
     }
-  };
+  }, [update]);
 
   return {
-    phase,
-    sequence,
-    playerInput,
-    displayIndex,
-    sessionId,
-    level,
-    difficulty,
-    consecutiveWins,
     state,
-    colorTheme,
-    coachingText,
-    newRule,
-    lastCorrect,
-    lastAttemptResponse,
-    showWinStreak,
     startGame,
-    displaySequence,
-    playNote,
+    handleCorrect,
+    handleWrong,
+    handlePsychAnswer,
     endGame,
-    setPhase,
+    generateNextPuzzle,
   };
 }
