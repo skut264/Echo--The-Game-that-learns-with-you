@@ -1,16 +1,4 @@
-import type {
-  LoginResponse,
-  GameStartResponse,
-  AttemptResponse,
-  GameEndResponse,
-  PlayerStats,
-  SessionSummary,
-  PuzzleGenerateResponse,
-  LLMPredictResponse,
-  PuzzleSwitchResponse,
-  PsychQuestionData,
-  MetricsSnapshotResponse,
-} from '../types';
+import type { PuzzleData, GameStartResponse, GameEndResponse, PlayerStats, SessionSummary, PuzzleRecord, PredictionRecord, RotationRecord, PuzzleOption, LoginResponse, AttemptResponse, DashboardSnapshot } from '../types';
 
 const API = import.meta.env.VITE_API_URL || '';
 
@@ -64,11 +52,19 @@ export const gameApi = {
   start: () =>
     request<GameStartResponse>('/api/game/start', { method: 'POST' }),
   attempt: (data: {
-    sequence_length: number;
+    puzzle_id: string;
+    puzzle_type: string;
+    prompt?: string;
+    correct_answer?: string;
     is_correct: boolean;
-    time_per_note_ms?: number;
+    decision_time_ms?: number;
+    time_visible_ms?: number;
     input_latency_ms?: number;
-    error_type?: string;
+    option_selected?: string;
+    hovered_options?: string[];
+    hover_durations_ms?: number[];
+    puzzle_attempt_count?: number;
+    canvas_positions?: Array<{ x: number; y: number }>;
   }) =>
     request<AttemptResponse>('/api/game/attempt', {
       method: 'POST',
@@ -77,7 +73,55 @@ export const gameApi = {
   end: () =>
     request<GameEndResponse>('/api/game/end', { method: 'POST' }),
   state: () =>
-    request<AttemptResponse['dashboard']>('/api/game/state'),
+    request<{ dashboard: DashboardSnapshot; current_puzzle: PuzzleData | null }>('/api/game/state'),
+  regenPuzzle: () =>
+    request<{ puzzle: PuzzleData }>('/api/regen-puzzle'),
+};
+
+// Puzzle generation
+export const puzzleApi = {
+  generate: (puzzleType?: string, sessionId?: number) =>
+    request<{ puzzle_id: number; puzzle_type: string; puzzle_data: PuzzleData; fib_spiral_visible: boolean }>(
+      '/api/puzzle/generate',
+      {
+        method: 'POST',
+        body: JSON.stringify({ puzzle_type: puzzleType, session_id: sessionId }),
+      },
+    ),
+  psychologyQuestion: () =>
+    request<{
+      puzzle_type: string;
+      question: string;
+      options: PuzzleOption[];
+      correct_index: number;
+      explanation: string;
+      max_time_ms: number;
+    }>('/api/puzzle/psychology-question', { method: 'POST' }),
+  psychologyAnswer: (selectedIndex: number, timeTakenMs: number) =>
+    request<{ is_correct: boolean; weight_applied: number }>('/api/puzzle/psychology-answer', {
+      method: 'POST',
+      body: JSON.stringify({ selected_index: selectedIndex, time_taken_ms: timeTakenMs }),
+    }),
+  predictFailure: () =>
+    request<{ will_fail: boolean; confidence: number; reasoning: string }>('/api/puzzle/llm-predict', {
+      method: 'POST',
+    }),
+  switchPuzzle: () =>
+    request<{ puzzle_id: number; puzzle_type: string; puzzle_data: PuzzleData; fib_spiral_visible: boolean }>(
+      '/api/puzzle/switch',
+      { method: 'POST' },
+    ),
+};
+
+// Metrics
+export const metricsApi = {
+  snapshot: (data: { avg_time_per_note_ms?: number; puzzle_type?: string }) =>
+    request<{ snapshot_id: number }>('/api/metrics/snapshot', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  history: (limit = 10) =>
+    request<{ snapshots: any[] }>(`/api/metrics/history?limit=${limit}`),
 };
 
 // Dashboard
@@ -86,48 +130,10 @@ export const dashboardApi = {
     request<PlayerStats>('/api/dashboard/stats'),
   sessions: (limit = 20) =>
     request<SessionSummary[]>(`/api/dashboard/sessions?limit=${limit}`),
-};
-
-// Puzzle System
-export const puzzleApi = {
-  generate: (puzzleType?: string) =>
-    request<PuzzleGenerateResponse>('/api/puzzle/generate', {
-      method: 'POST',
-      body: JSON.stringify({ puzzle_type: puzzleType || null }),
-    }),
-  psychologyQuestion: () =>
-    request<PsychQuestionData>('/api/puzzle/psychology-question', {
-      method: 'POST',
-    }),
-  psychologyAnswer: (selectedIndex: number, timeTakenMs: number) =>
-    request<{ is_correct: boolean; weight_applied: number }>('/api/puzzle/psychology-answer', {
-      method: 'POST',
-      body: JSON.stringify({ selected_index: selectedIndex, time_taken_ms: timeTakenMs }),
-    }),
-  predictFailure: () =>
-    request<LLMPredictResponse>('/api/puzzle/llm-predict', {
-      method: 'POST',
-    }),
-  switchPuzzle: () =>
-    request<PuzzleSwitchResponse>('/api/puzzle/switch', {
-      method: 'POST',
-    }),
-};
-
-// Metrics
-export const metricsApi = {
-  snapshot: (data: {
-    avg_time_per_note_ms?: number;
-    variance_time_per_note?: number;
-    error_rate_rolling?: number;
-    reaction_time_improvement?: number;
-    fatigue_score?: number;
-    puzzle_type?: string;
-  }) =>
-    request<MetricsSnapshotResponse>('/api/metrics/snapshot', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-  history: (limit = 10) =>
-    request<{ snapshots: any[] }>(`/api/metrics/history?limit=${limit}`),
+  puzzles: (limit = 20) =>
+    request<{ puzzles: PuzzleRecord[] }>(`/api/dashboard/puzzles?limit=${limit}`),
+  predictions: (limit = 20) =>
+    request<{ predictions: PredictionRecord[] }>(`/api/dashboard/predictions?limit=${limit}`),
+  rotations: (limit = 20) =>
+    request<{ rotations: RotationRecord[] }>(`/api/dashboard/rotations?limit=${limit}`),
 };
