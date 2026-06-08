@@ -7,3 +7,9 @@ dist/
 backend/echo.db
 .DS_Store
 *.env
+v1.1-spec.md
+SPEC_OVERHAUL.md
+SPEC_FRONTEND.md
+*.pkl
+predictor_data/
+predictor_data.pkl
