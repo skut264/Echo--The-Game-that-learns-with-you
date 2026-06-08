@@ -32,7 +32,7 @@ export function goldenSpiralPoint(
   index: number,
   canvasW: number,
   canvasH: number,
-  maxNotes: number,
+  _maxNotes: number,
 ): { x: number; y: number; size: number; rotation: number } {
   const angle = (index * GOLDEN_ANGLE * Math.PI) / 180;
   const cx = canvasW * GOLDEN_CANVAS.centerX;
@@ -52,7 +52,7 @@ export function fibTiming(baseMs: number, difficulty: number, index: number = 0)
 }
 
 // Generate a decorative fibonacci spiral SVG path data
-export function fibSpiralPath(cx: number, cy: number, maxR: number, arms: number = 3, steps: number = 80): string {
+export function fibSpiralPath(cx: number, cy: number, maxR: number, _arms: number = 3, steps: number = 80): string {
   let path = '';
   for (let i = 0; i <= steps; i++) {
     const t = (i / steps) * 6 * Math.PI;
